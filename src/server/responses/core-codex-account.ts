@@ -17,6 +17,7 @@ import {
   resetUpstreamHostHealth,
 } from "../../codex/upstream-host-health";
 import { safeOriginLabel, fetchWithHeaderTimeout, providerFetch } from "./fetch-helpers";
+import { fetchWithResetRetry } from "../../lib/upstream-retry";
 import { classifyPoolRecoveryDispatch } from "../../routing/probe-lease";
 import { formatErrorResponse } from "../../bridge";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
@@ -351,6 +352,20 @@ export interface CodexPoolAccountRetryArgs {
     sendBudget?: TransientSendBudget;
     /** Root workflow this turn belongs to, so the move is charged there as well. */
     workflowRootId?: string;
+  };
+  /**
+   * The reset-replay decision this request already made, plus the counters the dispatcher owns.
+   *
+   * Passed rather than recomputed. This leg rebuilds the request for another account, and
+   * judging a rebuilt body could reach a different answer than the one the request started
+   * with, which would make the behaviour depend on which account leg reset. `attempts` and
+   * `noteSendsConsumed` are the same request-wide budget every other send draws on, so a replay
+   * here cannot buy a send the logical request has not got.
+   */
+  resetReplay?: {
+    options: { replayResets?: number };
+    attempts: () => number;
+    noteSendsConsumed: (sends: number) => void;
   };
   firstAuthCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   firstResponse: Response;
@@ -800,35 +815,60 @@ export async function retryCodexPoolOnAlternateAccount(
         // The move is a physical send like any other, so the root workflow is charged too.
         chargeWorkflowSends(args.options.workflowRootId, 1);
       }
-      noteProviderAttemptSend(logCtx, route.providerName, route.provider, passthroughEstimate);
+      const movedAuthCtx = retryAuthCtx;
+      const sendOnce = (): Promise<Response> => fetchWithHeaderTimeout(
+        request.url,
+        {
+          method: request.method,
+          headers: request.headers,
+          body: request.body,
+        },
+        upstream.signal,
+        connectMs,
+        stream,
+        providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+          providerName: route.providerName,
+          modelId: route.modelId,
+          onCodexWsQuota: codexWsQuotaObserver(movedAuthCtx, route.provider, route.modelId),
+          beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
+            ? createCodexReserveDispatchGuard(movedAuthCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
+        }),
+        // Credential-bearing forward send: never follow a redirect into a
+        // dead-host rejection after the credential was seen (#914).
+        route.provider.authMode === "forward",
+      );
+      // The move goes through the shared reset layer like every other send. Without a policy
+      // that layer changes nothing but the answer to a pre-header reset: the refusal this
+      // request would get on any other leg, instead of a transport throw the caller turns into
+      // a client-retryable 502 for an ambiguous send.
+      let movePhysicalSends = 0;
       try {
-        upstreamResponse = await fetchWithHeaderTimeout(
-          request.url,
-          {
-            method: request.method,
-            headers: request.headers,
-            body: request.body,
+        upstreamResponse = await fetchWithResetRetry(sendOnce, {
+          abortSignal: options.abortSignal,
+          label: safeOriginLabel(request.url),
+          // The account move already reserved one send. Anything past it is an extra physical
+          // send, so it is measured against what the logical request has left.
+          attempts: Math.max(1, args.resetReplay?.attempts() ?? 1),
+          onSendsConsumed: sends => {
+            for (let i = 0; i < sends; i += 1) {
+              noteProviderAttemptSend(logCtx, route.providerName, route.provider, passthroughEstimate);
+            }
+            // The first send is the one the move permit and the workflow charge already bought.
+            const extra = Math.max(0, movePhysicalSends + sends - 1);
+            movePhysicalSends += sends;
+            if (extra > 0) {
+              args.resetReplay?.noteSendsConsumed(extra);
+              chargeWorkflowSends(args.options.workflowRootId, extra);
+            }
           },
-          upstream.signal,
-          connectMs,
-          stream,
-          providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-            providerName: route.providerName,
-            modelId: route.modelId,
-            onCodexWsQuota: codexWsQuotaObserver(retryAuthCtx, route.provider, route.modelId),
-            beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
-              ? createCodexReserveDispatchGuard(retryAuthCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
-          }),
-          // Credential-bearing forward send: never follow a redirect into a
-          // dead-host rejection after the credential was seen (#914).
-          route.provider.authMode === "forward",
-        );
+          ...(args.resetReplay?.options ?? {}),
+        });
       } catch (error) {
         // Only the forward send is a transport boundary. Entitlement resolver throws below are
         // deliberately outside this catch so programming errors retain their original path.
         return { kind: "transport", error, authCtx: retryAuthCtx };
       }
-      retrySendCount += 1;
+      retrySendCount += Math.max(1, movePhysicalSends);
       args.onResponse?.(upstreamResponse, retryAuthCtx, request);
       // The alternate account can refuse the same model, and that refusal is evidence about the
       // account that produced it. Read BEFORE the ladder's own break, so the ordinary

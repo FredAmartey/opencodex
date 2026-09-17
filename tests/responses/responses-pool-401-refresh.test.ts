@@ -87,6 +87,8 @@ function request(
     headers?: HeadersInit;
     stream?: boolean;
     input?: unknown;
+    /** Emitted only when asked: `selfContainedResponsesBody` requires it for a reset replay. */
+    store?: false;
   } = {},
 ): Request {
   const headers = new Headers(options.headers);
@@ -99,7 +101,12 @@ function request(
     headers,
     body: JSON.stringify(compact
       ? { model: options.model ?? "gpt-5.5", input }
-      : { model: options.model ?? "gpt-5.5", input, stream: options.stream ?? false }),
+      : {
+        model: options.model ?? "gpt-5.5",
+        input,
+        stream: options.stream ?? false,
+        ...(options.store === false ? { store: false } : {}),
+      }),
   });
 }
 
@@ -354,6 +361,55 @@ describe("ordinary pool 401 refresh and replay (#2887)", () => {
     // Quarantine is the other half of the report: the account must stay usable.
     expect(isAccountNeedsReauth(ACCOUNT_ID)).toBe(false);
     expect(readStoredGeneration()).toBe(4);
+  });
+
+  /**
+   * The refreshed send is a send like any other: a connection that dies before response
+   * headers is ambiguous there too. It reached upstream unwrapped, so it observed neither
+   * the operator replay nor the refusal that stands in for it, and its physical sends were
+   * not charged to the logical request's budget. CodeRabbit found this on #4942.
+   */
+  test("a pre-header reset on the refreshed send replays under retryOnReset", async () => {
+    const cfg = config();
+    (cfg.providers as Record<string, Record<string, unknown>>).openai!.retryOnReset = {};
+    let resetOnce = false;
+    const harness = installHarness({
+      responseForSend: (authorization) => {
+        if (authorization !== "Bearer refreshed-access" || resetOnce) return undefined;
+        resetOnce = true;
+        throw Object.assign(new Error("The socket connection was closed unexpectedly."), { code: "ECONNRESET" });
+      },
+    });
+
+    const logCtx = { model: "", provider: "" } as RequestLogContext;
+    const response = await handleResponses(request("/v1/responses"), cfg, logCtx);
+
+    expect(response.status).toBe(200);
+    // One refresh, then the refreshed bearer sends twice: the reset and its replay.
+    expect(harness.refreshes).toEqual(["refresh-grant"]);
+    expect(harness.sends).toEqual([
+      "Bearer rejected-access", "Bearer refreshed-access", "Bearer refreshed-access",
+    ]);
+    expect(isAccountNeedsReauth(ACCOUNT_ID)).toBe(false);
+  });
+
+  test("a pre-header reset on the refreshed send without the policy is the refusal, not a transport error", async () => {
+    let resetOnce = false;
+    const harness = installHarness({
+      responseForSend: (authorization) => {
+        if (authorization !== "Bearer refreshed-access" || resetOnce) return undefined;
+        resetOnce = true;
+        throw Object.assign(new Error("The socket connection was closed unexpectedly."), { code: "ECONNRESET" });
+      },
+    });
+
+    const response = await handleResponses(
+      request("/v1/responses"), config(), { model: "", provider: "" } as RequestLogContext,
+    );
+
+    expect(response.status).toBe(429);
+    expect((await response.json()).error.code).toBe("upstream_reset_replay_refused");
+    expect(harness.sends).toEqual(["Bearer rejected-access", "Bearer refreshed-access"]);
   });
 
   test("compact refreshes a time-valid stored credential once and replays the same account", async () => {
@@ -1032,6 +1088,106 @@ describe("ordinary pool 401 refresh and replay (#2887)", () => {
       "Bearer refreshed-access",
     ]);
     expect(harness.refreshes).toEqual(["refresh-grant"]);
+  });
+});
+
+/**
+ * The account move is a send like every other leg, so a connection that dies before a response
+ * head there is the same ambiguous failure. It reached upstream unwrapped, so an eligible
+ * request that moved accounts and then reset observed neither the operator replay nor the
+ * refusal, and the answer depended on which leg happened to reset. Found in review on #4942.
+ */
+describe("pre-header reset on the alternate-account send", () => {
+  /** Both accounts hold live bearers, so the move is reached without a 401 replay first. */
+  function writeTwoLiveAccounts(): void {
+    writeFileSync(join(home, "codex-accounts.json"), JSON.stringify({
+      [ACCOUNT_ID]: storedRecord({
+        accessToken: "work-access",
+        refreshToken: "work-grant",
+        generation: 1,
+        chatgptAccountId: "acc-work",
+      }),
+      [OTHER_ACCOUNT_ID]: storedRecord({
+        accessToken: "other-access",
+        refreshToken: "other-grant",
+        generation: 1,
+        chatgptAccountId: "acc-other",
+      }),
+    }, null, 2));
+  }
+
+  function movingConfig(extra: Record<string, unknown> = {}): OcxConfig {
+    const cfg = config({ secondAccount: true });
+    // fill-first keeps the process-wide round-robin cursor where the other regressions expect it.
+    cfg.accountPoolStrategy = "fill-first";
+    Object.assign(cfg.providers.openai as Record<string, unknown>, extra);
+    return cfg;
+  }
+
+  function resetOnce(): { harness: Harness; movedSends: () => number } {
+    let reset = false;
+    let moved = 0;
+    const harness = installHarness({
+      responseForSend: authorization => {
+        if (authorization === "Bearer work-access") {
+          return Response.json({ error: { message: "pool exhausted" } }, { status: 429 });
+        }
+        if (authorization === "Bearer other-access") {
+          moved += 1;
+          if (!reset) {
+            reset = true;
+            throw Object.assign(
+              new Error("The socket connection was closed unexpectedly."),
+              { code: "ECONNRESET" },
+            );
+          }
+          return Response.json({
+            id: "resp_alternate", object: "response", status: "completed",
+            model: "gpt-5.5", output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          });
+        }
+        return undefined;
+      },
+    });
+    return { harness, movedSends: () => moved };
+  }
+
+  test("with retryOnReset the leg still refuses, because the request has no send left", async () => {
+    writeTwoLiveAccounts();
+    const { harness, movedSends } = resetOnce();
+
+    const response = await handleResponses(
+      // `store: false` is what makes the body self-contained; without it the policy never
+      // reaches the wire and this case would pass for the wrong reason.
+      request("/v1/responses", { store: false }),
+      movingConfig({ retryOnReset: {} }),
+      { model: "", provider: "" } as RequestLogContext,
+    );
+
+    // The policy reaches this leg, and the request-wide allowance is what stops it: the first
+    // send and the account move already spent two of three, so the replay would be a fourth
+    // physical send. A per-leg counter would have bought it; one shared budget does not.
+    expect(response.status).toBe(429);
+    expect((await response.json()).error.code).toBe("upstream_reset_replay_refused");
+    expect(movedSends()).toBe(1);
+    expect(harness.sends).toEqual(["Bearer work-access", "Bearer other-access"]);
+  });
+
+  test("without the policy the alternate leg answers the refusal, not a transport error", async () => {
+    writeTwoLiveAccounts();
+    const { harness, movedSends } = resetOnce();
+
+    const response = await handleResponses(
+      request("/v1/responses"),
+      movingConfig(),
+      { model: "", provider: "" } as RequestLogContext,
+    );
+
+    // 502 here would invite the client to resend a request that may already be running.
+    expect(response.status).toBe(429);
+    expect((await response.json()).error.code).toBe("upstream_reset_replay_refused");
+    expect(movedSends()).toBe(1);
+    expect(harness.sends).toEqual(["Bearer work-access", "Bearer other-access"]);
   });
 });
 

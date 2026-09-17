@@ -106,6 +106,8 @@ export type {
   ResponsesItemIdRepairConfig,
   RateLimitRetryPolicy,
   TransientRetryPolicy,
+
+  ResetReplayPolicy,
   ProviderWebSearchBridgeBackend,
   ProviderWebSearchBridgeConfig,
   ProviderCostOverlay,

@@ -68,6 +68,18 @@ it, nor does it record the refusal as rate-limit or quota evidence against the c
 was holding. Tool-call side requests such as vision and web search are replayed normally, because
 repeating them cannot duplicate a turn.
 
+This default is the shared failure model's verdict for a reset at the pre-header stage, not a
+rule this path holds on its own.
+
+A native Responses provider can opt into replaying this case with
+[`retryOnReset`](providers.md#provider-fields). The proxy then sends the request again on a
+fresh connection when, and only when, the request is self-contained (`store: false`, complete
+input, client-executed tools only, no server-side continuation state). Replays continue until
+the configured total send count is reached, bounded by the send budget the leg already has, so
+the default of two allows one replay. The refusal returns when those sends are spent or a
+replay fails for another reason. A caller that cancels mid-replay gets the cancellation, not
+the refusal. Any other request shape keeps the refusal.
+
 `noProxy` accepts either a comma-separated string or an array. Both forms add entries without
 replacing an inherited `NO_PROXY`:
 

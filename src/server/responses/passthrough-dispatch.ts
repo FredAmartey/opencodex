@@ -126,6 +126,7 @@ import {
   rateLimitRetryDelayMs,
   transientRetryPolicyFor,
 } from "../../providers/key-failover";
+import { resetReplayOptions } from "./reset-replay";
 import type { AttemptRecoveryKind } from "../../usage/log";
 import { resolveWireProtocolOverride } from "../adapter-resolve";
 import { refreshPoolForwardAuth, refreshNativeMainForwardAuth, withClaudeNativeSession } from "./core-auth";
@@ -809,6 +810,11 @@ export async function preparePassthroughExchange(
     };
     const initialBodyRefusal = refuseOversizedOutboundBody(request);
     if (initialBodyRefusal) return initialBodyRefusal;
+    // Decided once for the request and carried by every leg below: the rotation, refresh and
+    // same-target 429 legs rebuild the request but send the same turn, so a reset on any of
+    // them is the same question. Empty unless the provider opted in AND the body is one the
+    // proxy can judge self-contained (see reset-replay.ts).
+    const resetReplay = resetReplayOptions(route.provider, parsed._rawBody);
     try {
       // Transient-5xx pre-stream retry (devlog/_plan/260716_claudecode_hardening/010):
       // the ChatGPT backend emits transient 502/520s that an immediate retry absorbs.
@@ -851,6 +857,7 @@ export async function preparePassthroughExchange(
           // failing the turn. Recovery legs keep the fail-closed refusal; only this
           // initial send is replay-eligible. Attempts stay budget-bounded via attempts.
           replaySafe: isOpenCodeGoDestination(route.provider),
+          ...resetReplay,
         },
       );
     } catch (err) {
@@ -949,7 +956,7 @@ export async function preparePassthroughExchange(
               route.provider.authMode === "forward")
               .then(adoptObservedResponse);
           },
-          { abortSignal: upstream.signal, label: safeHostLabel(request.url), attempts: allowance.attempts, onSendsConsumed: noteTransientSends },
+          { abortSignal: upstream.signal, label: safeHostLabel(request.url), attempts: allowance.attempts, onSendsConsumed: noteTransientSends, ...resetReplay },
         );
       } catch (err) {
         return { failed: transportFailureResponse(err) };
@@ -1030,35 +1037,47 @@ export async function preparePassthroughExchange(
         // every other build site; a replay is exactly when a grown payload reappears.
         const replayBodyRefusal = refuseOversizedOutboundBody(request);
         if (replayBodyRefusal) return replayBodyRefusal;
-        transportState.noteRoutedAttemptSend(passthroughEstimate, "oauth-401");
-        upstreamResponse = await fetchWithHeaderTimeout(
-          request.url,
-          { method: request.method, headers: request.headers, body: request.body },
-          upstream.signal,
-          connectMs,
-          parsed.stream,
-          // The replay-dispatched signal is what bounds the rest of this logical request, so it
-          // has to describe a send that actually happened. fetchWithHeaderTimeout awaits pacing
-          // admission BEFORE calling the executor, so signalling at the call site would spend the
-          // budget even when a rejected pacing wait means nothing reaches the network. Wrapping
-          // the executor moves the signal to the last moment before the send, where a throw from
-          // here on is a genuine transport attempt.
-          storedPoolReplayDispatchNotifier(
-            providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-              nativeControl: nativeResponseControlEligible(route.provider, options.nativeControl) && options.inboundTransport === "websocket" && !options.comboAttempt
-                && responseEffects.plaintextV2AgentMessageToolNames.size === 0
-                ? options.nativeControl : undefined,
-              dispatchOverride: oauthDispatch(request),
-              providerName: route.providerName,
-              modelId: route.modelId,
-              onCodexWsQuota: codexWsQuotaObserver(admissionState.authCtx, route.provider, route.modelId),
-              beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
-                ? createCodexReserveDispatchGuard(admissionState.authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
-            }),
-            codex401ReplayKind === "stored" ? options.onStoredPool401ReplayDispatched : undefined,
-          ),
-          route.provider.authMode === "forward",
-        ).then(adoptObservedResponse);
+        // The replay-dispatched signal is what bounds the rest of this logical request, so it
+        // has to describe a send that actually happened. fetchWithHeaderTimeout awaits pacing
+        // admission BEFORE calling the executor, so signalling at the call site would spend the
+        // budget even when a rejected pacing wait means nothing reaches the network. Wrapping
+        // the executor moves the signal to the last moment before the send, where a throw from
+        // here on is a genuine transport attempt. The notifier is built once for the whole leg:
+        // it fires on the first dispatch, and a reset replay is another send of the same replay,
+        // not a second one to announce.
+        const oauthReplayExecutor = storedPoolReplayDispatchNotifier(
+          providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+            nativeControl: nativeResponseControlEligible(route.provider, options.nativeControl) && options.inboundTransport === "websocket" && !options.comboAttempt
+              && responseEffects.plaintextV2AgentMessageToolNames.size === 0
+              ? options.nativeControl : undefined,
+            dispatchOverride: oauthDispatch(request),
+            providerName: route.providerName,
+            modelId: route.modelId,
+            onCodexWsQuota: codexWsQuotaObserver(admissionState.authCtx, route.provider, route.modelId),
+            beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
+              ? createCodexReserveDispatchGuard(admissionState.authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
+          }),
+          codex401ReplayKind === "stored" ? options.onStoredPool401ReplayDispatched : undefined,
+        );
+        upstreamResponse = await fetchWithTransientRetry(
+          recovery => {
+            transportState.noteRoutedAttemptSend(passthroughEstimate, recovery ?? "oauth-401");
+            return fetchWithHeaderTimeout(
+              request.url,
+              applyUpstreamRecoveryInit({
+                method: request.method,
+                headers: request.headers,
+                body: request.body,
+              }, recovery),
+              upstream.signal,
+              connectMs,
+              parsed.stream,
+              oauthReplayExecutor,
+              route.provider.authMode === "forward",
+            ).then(adoptObservedResponse);
+          },
+          { abortSignal: upstream.signal, label: safeHostLabel(request.url), attempts: remainingTransientSendBudget(transientSendAttempts()), onSendsConsumed: noteTransientSends, ...resetReplay },
+        );
       } catch (err) {
         return transportFailureResponse(err);
       } finally {
@@ -1182,7 +1201,7 @@ export async function preparePassthroughExchange(
               route.provider.authMode === "forward")
               .then(adoptObservedResponse);
           },
-          { abortSignal: upstream.signal, label: safeHostLabel(request.url), attempts: remainingTransientSendBudget(transientSendAttempts()), onSendsConsumed: noteTransientSends },
+          { abortSignal: upstream.signal, label: safeHostLabel(request.url), attempts: remainingTransientSendBudget(transientSendAttempts()), onSendsConsumed: noteTransientSends, ...resetReplay },
         );
       } catch (err) {
         return transportFailureResponse(err);
@@ -1314,7 +1333,7 @@ export async function preparePassthroughExchange(
               route.provider.authMode === "forward")
               .then(adoptObservedResponse);
           },
-          { abortSignal: upstream.signal, label: safeHostLabel(request.url), attempts: remainingTransientSendBudget(transientSendAttempts()), onSendsConsumed: noteTransientSends },
+          { abortSignal: upstream.signal, label: safeHostLabel(request.url), attempts: remainingTransientSendBudget(transientSendAttempts()), onSendsConsumed: noteTransientSends, ...resetReplay },
         );
       } catch (err) {
         return transportFailureResponse(err);
@@ -1412,6 +1431,12 @@ export async function preparePassthroughExchange(
           firstResponse: upstreamResponse,
           outcomeStatus: poolRetryOutcome,
           sameAccountOnly: storedReplaySpent,
+          // The decision this request already made, with the counters it already spends from.
+          resetReplay: {
+            options: resetReplay,
+            attempts: () => remainingTransientSendBudget(transientSendAttempts()),
+            noteSendsConsumed: noteTransientSends,
+          },
           upstream,
           connectMs,
           passthroughEstimate,

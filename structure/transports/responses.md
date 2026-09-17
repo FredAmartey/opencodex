@@ -849,6 +849,40 @@ compact, and native Chat — are deliberately not opted in. Adapters with their 
 `fetchResponse` (kiro, cursor, google) keep their own retry policies; kiro imports the shared
 abort/sleep helpers from this module.
 
+One operator opt-in reaches a model-POST path, and it is not `replaySafe`.
+
+The default is not a rule this path holds privately. In the shared vocabulary
+(`src/lib/request-failure-model.ts`) a connection reset is `transport-ambiguous` and a send
+that died before a response head is at the `pre-header` stage; that pair is
+`refused-ambiguous`, which is what the refusal restates. `fetchWithResetRetry` reads the table
+rather than repeating it, so a change there reaches this path. `refused-ambiguous` forbids an
+AUTOMATIC resend and, by its own contract, leaves room for a bounded recovery an operator
+opted into. This is that recovery.
+
+`providers.<name>.retryOnReset` (`src/providers/key-failover.ts::resetReplayPolicyFor`) lets
+the native Responses passthrough pass `replayResets` on every send of a request — initial,
+rotation, forward-auth 401 refresh, OAuth rotation, same-target 429 and the alternate-account
+move alike — when the inbound body is one the proxy can judge self-contained: `store: false`, a
+complete `input`, only client-executed tools and no `previous_response_id`, `conversation`,
+`background` or `stream_id` (`src/server/responses/reset-replay.ts::selfContainedResponsesBody`,
+fail-closed on any unknown tool or item type). The judgment is made once per request and threaded
+to each leg, including the account move in
+`src/server/responses/core-codex-account.ts::retryCodexPoolOnAlternateAccount`, so the answer
+cannot depend on which leg reset.
+
+`replayResets` is a ceiling inside the leg's existing `attempts`, never an addition to it. The
+table keys `transport-ambiguous` to the `transient` send class, which is the allowance
+`attempts` measures, and the helper funds the opt-in only while that stays true. One logical
+request therefore funds one pool of sends: under the default three-send allowance a request that
+already moved accounts has nothing left for a replay, and the refusal stands. Two bounded
+recoveries cannot each buy an independent replacement send for one request.
+
+It settles differently from a replay-safe retry: once the ceiling is reached, or a later attempt
+of that leg fails any other way, the helper returns the same refusal a reset gets without the
+policy, so no exit of this path can hand the client a status that invites the turn to be sent
+again. A caller cancellation during a replay surfaces as the cancellation. The generic adapter
+dispatch, its continuation, compact and native Chat keep the refusal unconditionally.
+
 ## Console upload rejection recovery
 
 `src/providers/opencode-zen-rate-limit.ts` recognizes the complete Console upload-rejection envelope only at the effective HTTPS opencode.ai Zen/Go generation endpoint. A provider row name cannot authorize another destination. The two recovery loops in `src/server/responses/core.ts` wait 800 ms and replay the captured serialized request once; cancellation, nonreplayable responses, other errors and a second upload rejection keep their failure semantics. The recovery kind is persisted as `console-go-upload-retry` and has a localized Logs label.
@@ -1250,7 +1284,10 @@ turn up to four more times, and a 429 is where the client stops.
 `upstream_reset_replay_refused`. No response headers is not evidence that the model POST
 was never processed, so the decision not to replay is ours, made before any response
 existed — the same shape as `request_send_budget_exhausted`, and it takes the same status
-for the same reason. Only an explicitly replay-safe operation opts into reset retries.
+for the same reason. Only an explicitly replay-safe operation opts into reset retries, or a
+provider the operator opted in through `retryOnReset` for a request the proxy judged
+self-contained; that replay spends the leg's own send budget and ends in this refusal when
+it is spent (see [upstream reset retry](#upstream-reset-retry)).
 
 **An upstream reset observed mid-stream or after a terminal keeps its existing behaviour.**
 The passthrough read path still settles a genuine upstream reset as a synthetic 502, and the
