@@ -671,6 +671,88 @@ describe("Codex app-server process matching (#476)", () => {
     expect(result.failed).toEqual([]);
   });
 
+  /**
+   * #5354: the post-write handler warned on process presence alone, so a server that booted
+   * AFTER the catalog write still drew "restart Codex" guidance. The startup counterpart has
+   * always classified first. Asserted through the same io seam the reporter used: a fresh
+   * server, a stale one, and one whose start time cannot be read.
+   */
+  test("afterCatalogWriteHandleAppServers classifies before it warns (#5354)", () => {
+    const snapshots = [{ pid: 7, commandLine: "codex app-server --listen unix://x" }];
+    const handle = (io: Record<string, unknown>) => {
+      const errors: string[] = [];
+      const result = afterCatalogWriteHandleAppServers({
+        restart: false,
+        log: { log: () => {}, error: line => errors.push(String(line)) },
+        io: { listSnapshots: () => snapshots, kill: () => {}, isAlive: () => false, waitExit: () => true, ...io },
+      });
+      return { warned: result.warned, errors };
+    };
+
+    // Started after the catalog write: its model list is the one on disk, so nothing to say.
+    const fresh = handle({ platform: "darwin", readStartMs: () => 200_000, catalogMtimeMs: () => 100_000 });
+    expect(fresh.warned).toBe(false);
+    expect(fresh.errors).toEqual([]);
+
+    // Started before it: the picker is showing a roster that no longer exists.
+    const stale = handle({ platform: "darwin", readStartMs: () => 100_000, catalogMtimeMs: () => 200_000 });
+    expect(stale.warned).toBe(true);
+    expect(stale.errors[0]).toContain("ocx sync --restart-codex");
+
+    // No start time to compare: the operator is present and can act, so say it rather than
+    // stay silent. This is where the CLI path and the unattended startup path differ.
+    const unknown = handle({ platform: "darwin", readStartMs: () => null, catalogMtimeMs: () => 200_000 });
+    expect(unknown.warned).toBe(true);
+  });
+
+  test("the freshness verdict ignores excluded pids (#5354)", () => {
+    const errors: string[] = [];
+    // The desktop app's own server is excluded by the caller. It is older than the catalog
+    // write, so a verdict taken over the full list would read `stale` and warn about a server
+    // this command is about to restart anyway.
+    const result = afterCatalogWriteHandleAppServers({
+      restart: false,
+      excludePids: [11],
+      log: { log: () => {}, error: line => errors.push(String(line)) },
+      io: {
+        platform: "darwin",
+        listSnapshots: () => [
+          { pid: 11, commandLine: "codex app-server --listen unix://old" },
+          { pid: 12, commandLine: "codex app-server --listen unix://new" },
+        ],
+        readStartMs: pid => (pid === 11 ? 50_000 : 200_000),
+        catalogMtimeMs: () => 100_000,
+        kill: () => {},
+        isAlive: () => false,
+        waitExit: () => true,
+      },
+    });
+
+    expect(result.processes.map(process => process.pid)).toEqual([12]);
+    expect(result.warned).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
+  test("an explicit restart still stops a fresh app-server (#5354)", () => {
+    const logs: string[] = [];
+    const restarted = afterCatalogWriteHandleAppServers({
+      restart: true,
+      log: { log: line => logs.push(String(line)), error: () => {} },
+      io: {
+        platform: "darwin",
+        listSnapshots: () => [{ pid: 9, commandLine: "codex app-server --listen unix://x" }],
+        readStartMs: () => 200_000,
+        catalogMtimeMs: () => 100_000,
+        kill: () => {},
+        isAlive: () => false,
+        waitExit: () => true,
+      },
+    });
+    // Classification gates the WARNING, never a restart the operator asked for.
+    expect(restarted.restart?.stopped).toEqual([9]);
+    expect(restarted.warned).toBe(false);
+  });
+
   test("afterCatalogWriteHandleAppServers warns by default and restarts when requested", () => {
     const errors: string[] = [];
     const logs: string[] = [];

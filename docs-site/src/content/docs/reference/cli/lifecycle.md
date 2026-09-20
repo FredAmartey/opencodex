@@ -285,9 +285,11 @@ Codex configuration can be injected. If that validation refuses the config, the 
 nonzero, prints the concrete reason on stderr, and leaves the existing catalog and cache unchanged.
 `ocx restore back` uses the same no-write preflight before it re-enables routing.
 
-If long-lived Codex `app-server` processes are still running, `ocx sync` warns that they may keep
-serving the previous in-memory model list even though `opencodex-catalog.json` / `models_cache.json`
-were updated. Pass `--restart-codex` to restart matching `codex … app-server` and
+If long-lived Codex `app-server` processes are still running, `ocx sync` classifies them before
+it says anything: a process that started after the write already holds the catalog on disk and
+draws no warning, while one that started before it, or whose start time cannot be read, warns that
+it may keep serving the previous in-memory model list even though `opencodex-catalog.json` /
+`models_cache.json` were updated. Pass `--restart-codex` to restart matching `codex … app-server` and
 `codex-code-mode-host` processes **and** fully quit and relaunch the Codex desktop app, on macOS,
 Linux, and Windows, so the model picker re-reads the catalog. Live conversations end. Broad
 `pkill -f codex` matching is intentionally avoided.

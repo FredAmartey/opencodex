@@ -1235,6 +1235,26 @@ export function afterCatalogWriteHandleAppServers(
     return { processes, warned: false, hint };
   }
   if (!options.restart) {
+    // Classify before recommending an interrupting restart (#5354). A server that booted after
+    // the write already holds the roster on disk, so warning about it sends the operator to
+    // restart something that is not stale. Only a definite `fresh` verdict is silent: with no
+    // readable start time the honest answer is that we cannot tell, and an operator who just
+    // ran a sync is present and can act on that. The unattended startup counterpart takes the
+    // opposite default for the same reason, and says nothing unless the state is `stale`.
+    // Read the same two inputs the classifier reads, for the processes left after
+    // `excludePids`: collectCodexAppServerCatalogState() re-lists and knows nothing about that
+    // exclusion, so a caller's own app-server could make this read `stale`.
+    const starts = options.io?.readStartMs
+      ? new Map(processes.map(process => [process.pid, options.io!.readStartMs!(process.pid)] as const))
+      : readProcessStartMsBatch(processes.map(process => process.pid), options.io?.platform ?? process.platform);
+    const status = catalogStatusFromProcesses(
+      processes,
+      (options.io?.catalogMtimeMs ?? defaultCatalogMtimeMs)(),
+      starts,
+    );
+    if (status.state === "fresh") {
+      return { processes, warned: false, hint };
+    }
     options.log?.error(formatStaleCodexAppServerWarning(processes));
     return { processes, warned: true, hint };
   }

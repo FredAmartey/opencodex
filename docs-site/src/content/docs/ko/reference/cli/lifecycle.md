@@ -237,7 +237,9 @@ single-flight/lock 파일을 만들 수 있는지, 건강하지 않은 OAuth 또
 설정된 모든 공급자에서 라이브 모델 목록을 가져와 병합된 카탈로그를 Codex에 다시 주입합니다.
 공급자를 추가한 뒤나 사용 가능한 모델을 새로 고칠 때 실행합니다.
 
-오래 실행 중인 Codex `app-server` 프로세스가 아직 살아 있으면, `opencodex-catalog.json` /
+오래 실행 중인 Codex `app-server` 프로세스가 아직 살아 있으면 경고하기 전에 먼저 분류합니다.
+쓰기 이후에 시작된 프로세스는 이미 디스크의 카탈로그를 들고 있으므로 경고하지 않습니다. 쓰기 이전에
+시작되었거나 시작 시각을 읽을 수 없는 프로세스에 대해서는, `opencodex-catalog.json` /
 `models_cache.json`가 업데이트되었더라도 이전 인메모리 모델 목록을 계속 서비스할 수 있다고 경고합니다.
 `--restart-codex`를 붙이면 일치하는 `codex … app-server`와 `codex-code-mode-host` 프로세스를
 재시작하는 데 더해, macOS·Linux·Windows에서 Codex 데스크톱 앱을 완전히 종료했다가 다시 띄웁니다.
