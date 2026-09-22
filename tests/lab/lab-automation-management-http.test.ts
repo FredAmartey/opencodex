@@ -58,9 +58,9 @@ afterEach(() => {
   requestLabAutomationShutdown();
   stopLabAutomationScheduler();
   resetLabAutomationSchedulerStateForTests();
-  for (const dir of HOMES.splice(0)) removeTreeWithRetry(dir);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
+  for (const dir of HOMES.splice(0)) removeTreeWithRetry(dir);
 });
 
 describe("CL-08 automation management HTTP", () => {

@@ -24,9 +24,9 @@ const HOMES: string[] = [];
 const previousHome = process.env.OPENCODEX_HOME;
 
 afterEach(() => {
-  for (const home of HOMES.splice(0)) removeTreeWithRetry(home);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
+  for (const home of HOMES.splice(0)) removeTreeWithRetry(home);
 });
 
 function tempHome(): string {
