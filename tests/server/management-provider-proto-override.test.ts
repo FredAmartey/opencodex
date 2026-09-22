@@ -20,6 +20,7 @@ import type { OcxConfig } from "../../src/types";
 setDefaultTimeout(60_000);
 
 const TEST_DIR = mkdtempSync(join(tmpdir(), "ocx-management-provider-proto-"));
+const previousHome = process.env.OPENCODEX_HOME;
 
 const canonicalDirect = {
   adapter: "openai-responses",
@@ -64,6 +65,8 @@ describe("provider management validation", () => {
       resolvedError.mockRestore();
       await server.stop(true);
       removeTreeWithRetry(TEST_DIR);
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
     }
   });
 });

@@ -56,6 +56,7 @@ import { runRetiredCodexModelMigration, RETIRED_MODEL_MIGRATION_CUTOFF } from ".
 import { providerManagementConfigError } from "../../src/server/auth-cors";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 let testDir = "";
+const previousHome = process.env.OPENCODEX_HOME;
 
 /**
  * Windows without Developer Mode or admin cannot create a file symlink (EPERM).
@@ -82,7 +83,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.OPENCODEX_HOME;
+  if (previousHome === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = previousHome;
   if (testDir && existsSync(testDir)) removeTreeWithRetry(testDir);
   testDir = "";
 });
@@ -2686,7 +2687,6 @@ describe("opencodex config defaults", () => {
         errorSpy.mockRestore();
       }
     });
-
 
     test("diagnostics keep the operator's config instead of reporting defaults", () => {
       // The salvage in loadConfig was not enough on its own. readConfigDiagnostics returned

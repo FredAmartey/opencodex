@@ -33,6 +33,7 @@ import { createProductionLabRouteExecutor } from "../../src/lib/lab-live-route-p
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 
 const HOMES: string[] = [];
+const previousHome = process.env.OPENCODEX_HOME;
 
 function tempHome(): string {
   const dir = join(tmpdir(), `ocx-lab-coderabbit-${process.pid}-${Math.random().toString(16).slice(2)}`);
@@ -93,7 +94,8 @@ afterEach(() => {
   stopLabAutomationScheduler();
   resetLabAutomationSchedulerStateForTests();
   for (const dir of HOMES.splice(0)) removeTreeWithRetry(dir);
-  delete process.env.OPENCODEX_HOME;
+  if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = previousHome;
 });
 
 describe("CL-08 CodeRabbit regressions", () => {

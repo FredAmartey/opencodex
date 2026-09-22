@@ -21,6 +21,7 @@ import type { OcxConfig } from "../../src/types";
 setDefaultTimeout(60_000);
 
 const TEST_DIR = mkdtempSync(join(tmpdir(), "ocx-management-provider-pinsless-"));
+const previousHome = process.env.OPENCODEX_HOME;
 
 const canonicalDirect = {
   adapter: "openai-responses",
@@ -62,6 +63,8 @@ describe("provider management validation", () => {
     } finally {
       resolvedError.mockRestore();
       await server.stop(true);
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
     }
   });
 });
