@@ -1279,13 +1279,17 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     }
     // The form sends neither reasoning-replay list either. Without the stored value a custom
     // provider lost its list and a registry provider got the seed back, and the next tool turn
-    // on a thinking model failed upstream with nothing pointing at the save (#5563). An empty
-    // list is an explicit opt-out, so it is carried like any other stored value.
-    if (!submittedPreserveReasoningContentModels && existing?.preserveReasoningContentModels) {
-      prov.preserveReasoningContentModels = [...existing.preserveReasoningContentModels];
+    // on a thinking model failed upstream with nothing pointing at the save (#5563). Read the
+    // live row rather than `existing`, like the alias overlays below: a PATCH that saved either
+    // list while DNS validation awaited must not be undone. An empty list is an explicit
+    // opt-out, so any stored array is carried, `[]` included.
+    const livePreserveReasoningContentModels = config.providers[name]?.preserveReasoningContentModels;
+    if (!submittedPreserveReasoningContentModels && Array.isArray(livePreserveReasoningContentModels)) {
+      prov.preserveReasoningContentModels = [...livePreserveReasoningContentModels];
     }
-    if (!submittedRequiresReasoningPlaceholderModels && existing?.requiresReasoningPlaceholderModels) {
-      prov.requiresReasoningPlaceholderModels = [...existing.requiresReasoningPlaceholderModels];
+    const liveRequiresReasoningPlaceholderModels = config.providers[name]?.requiresReasoningPlaceholderModels;
+    if (!submittedRequiresReasoningPlaceholderModels && Array.isArray(liveRequiresReasoningPlaceholderModels)) {
+      prov.requiresReasoningPlaceholderModels = [...liveRequiresReasoningPlaceholderModels];
     }
     if (existing?.modelContextWindows) {
       // When the client did send a map, its keys win and the user's other keys survive. When

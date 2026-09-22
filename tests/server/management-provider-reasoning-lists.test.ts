@@ -34,13 +34,17 @@ afterEach(() => {
   home = "";
 });
 
-async function withServer(providers: Record<string, OcxProviderConfig>, run: (url: URL) => Promise<void>): Promise<void> {
+async function withServer(
+  providers: Record<string, OcxProviderConfig>,
+  run: (url: URL) => Promise<void>,
+  resolveDestination: (name: string) => Promise<string | null> = async () => null,
+): Promise<void> {
   home = mkdtempSync(join(tmpdir(), "ocx-provider-reasoning-lists-"));
   process.env.OPENCODEX_HOME = home;
   const base = config("127.0.0.1");
   saveConfig({ ...base, providers: { ...base.providers, ...providers } });
   const server = startServer(0);
-  const resolved = spyOn(destinationPolicy, "providerDestinationResolvedError").mockResolvedValue(null);
+  const resolved = spyOn(destinationPolicy, "providerDestinationResolvedError").mockImplementation(resolveDestination);
   try {
     await run(server.url);
   } finally {
@@ -143,6 +147,7 @@ describe("provider saves keep the reasoning-replay model lists", () => {
         adapter: "openai-chat",
         baseUrl: "https://relay.example/v1",
         preserveReasoningContentModels: ["deepseek-v4-pro"],
+        requiresReasoningPlaceholderModels: ["deepseek-v4-pro"],
       },
     }, async url => {
       const save = await send(url, "/api/providers", "POST", {
@@ -151,10 +156,54 @@ describe("provider saves keep the reasoning-replay model lists", () => {
           adapter: "openai-chat",
           baseUrl: "https://relay.example/v1",
           preserveReasoningContentModels: ["deepseek-v4-flash"],
+          requiresReasoningPlaceholderModels: ["deepseek-v4-flash"],
         },
       });
       expect(save.status).toBe(200);
-      expect(loadConfig().providers.relay?.preserveReasoningContentModels).toEqual(["deepseek-v4-flash"]);
+      expect(loadConfig().providers.relay).toMatchObject({
+        preserveReasoningContentModels: ["deepseek-v4-flash"],
+        requiresReasoningPlaceholderModels: ["deepseek-v4-flash"],
+      });
     });
+  });
+
+  test("a PATCH that lands while a dashboard save awaits DNS validation is not undone", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let held = false;
+    // Hold the POST inside its DNS check, the await between reading the stored row and saving.
+    const resolveDestination = async (name: string): Promise<string | null> => {
+      if (name === "relay" && !held) {
+        held = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return null;
+    };
+    await withServer({
+      relay: {
+        adapter: "openai-chat",
+        baseUrl: "https://relay.example/v1",
+        preserveReasoningContentModels: ["deepseek-v4-pro"],
+        requiresReasoningPlaceholderModels: ["deepseek-v4-pro"],
+      },
+    }, async url => {
+      const saving = send(url, "/api/providers", "POST", {
+        name: "relay",
+        provider: { adapter: "openai-chat", baseUrl: "https://relay.example/v1" },
+      });
+      await entered.promise;
+      const patch = await send(url, "/api/providers?name=relay", "PATCH", {
+        preserveReasoningContentModels: ["deepseek-v4-flash"],
+        requiresReasoningPlaceholderModels: [],
+      });
+      expect(patch.status).toBe(200);
+      release.resolve();
+      expect((await saving).status).toBe(200);
+      expect(loadConfig().providers.relay).toMatchObject({
+        preserveReasoningContentModels: ["deepseek-v4-flash"],
+        requiresReasoningPlaceholderModels: [],
+      });
+    }, resolveDestination);
   });
 });
