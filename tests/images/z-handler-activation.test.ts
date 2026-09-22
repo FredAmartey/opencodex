@@ -45,6 +45,11 @@ let releaseSpendHome: (() => void) | undefined;
 // Retained so teardown can remove it. Nothing created this directory before the lease did:
 // taking ownership mkdirs the state directory, so the suite now owns its removal too.
 let ownedHome = "";
+// `mock.restore()` does not undo `mock.module`: Bun keeps the three overrides below for every
+// file that runs after this one in the same process. Keep the real modules to put back.
+let realAdapterResolve: Record<string, unknown> = {};
+let realImageLoop: Record<string, unknown> = {};
+let realWebSearch: Record<string, unknown> = {};
 
 beforeAll(async () => {
   ownedHome = join(tmpdir(), "ocx-test-" + randomUUID());
@@ -52,9 +57,9 @@ beforeAll(async () => {
   // Take the writer lease after this suite installs its home so direct handler dispatch can open the spend journal.
   releaseSpendHome = acquireOwnedSpendHome();
 
-  const actualResolver = await import("../../src/server/adapter-resolve");
+  realAdapterResolve = { ...(await import("../../src/server/adapter-resolve")) };
   mock.module("../../src/server/adapter-resolve", () => ({
-    ...actualResolver,
+    ...realAdapterResolve,
     resolveAdapter(provider: OcxProviderConfig) {
       const base = {
         name: "test",
@@ -79,9 +84,9 @@ beforeAll(async () => {
     },
   }));
 
-  const actualLoop = await import("../../src/images/loop");
+  realImageLoop = { ...(await import("../../src/images/loop")) };
   mock.module("../../src/images/loop", () => ({
-    ...actualLoop,
+    ...realImageLoop,
     runWithImageBridge: async (args: {
       parsed: { options: { toolChoice?: unknown } };
       plan: { toolNames: Set<string> };
@@ -95,6 +100,7 @@ beforeAll(async () => {
     },
   }));
 
+  realWebSearch = { ...(await import("../../src/web-search/index")) };
   mock.module("../../src/web-search/index", () => ({
     buildWebSearchTool: () => ({ name: "web_search", parameters: { type: "object", properties: {} } }),
     WEB_SEARCH_TOOL_NAME: "web_search",
@@ -130,6 +136,9 @@ afterAll(() => {
   if (PREV_HOME === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = PREV_HOME;
   mock.restore();
+  mock.module("../../src/server/adapter-resolve", () => realAdapterResolve);
+  mock.module("../../src/images/loop", () => realImageLoop);
+  mock.module("../../src/web-search/index", () => realWebSearch);
 });
 
 /** Routed (non-OpenAI) keyed provider + an xAI provider with an API key so the real planImageBridge returns a plan. */

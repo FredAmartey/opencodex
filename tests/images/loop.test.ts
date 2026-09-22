@@ -15,6 +15,10 @@ let useRealProgressStream = false;
 let fulfillCallCount = 0;
 
 const PREV_HOME = process.env.OPENCODEX_HOME;
+// `mock.restore()` does not undo `mock.module`: Bun keeps both overrides below for every
+// file that runs after this one in the same process. Keep the real modules to put back.
+let realProgressStream: Record<string, unknown> = {};
+let realFulfill: Record<string, unknown> = {};
 let runWithImageBridgeProduction: typeof import("../../src/images/loop")["runWithImageBridge"];
 let clampImageMaxRounds: typeof import("../../src/images/loop")["clampImageMaxRounds"];
 let DEFAULT_MAX_ROUNDS: typeof import("../../src/images/loop")["DEFAULT_MAX_ROUNDS"];
@@ -28,6 +32,8 @@ let fulfillResult: ImageCallResult = {
 beforeAll(async () => {
   process.env.OPENCODEX_HOME = join(tmpdir(), "ocx-test-" + randomUUID());
   mock.restore();
+  realProgressStream = { ...(await import("../../src/web-search/progress-stream")) };
+  realFulfill = { ...(await import("../../src/images/fulfill")) };
   mock.module("../../src/web-search/progress-stream", () => ({
     parseStreamWithProgress: async function* (_resp: Response, parse: ProviderAdapter["parseStream"], opts: ParseStreamWithProgressOptions) {
       if (useRealProgressStream) yield* realParseStreamWithProgress(_resp, parse, opts);
@@ -58,7 +64,12 @@ function runWithImageBridge(
     },
   });
 }
-afterAll(() => { if (PREV_HOME === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = PREV_HOME; mock.restore(); });
+afterAll(() => {
+  if (PREV_HOME === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = PREV_HOME;
+  mock.restore();
+  mock.module("../../src/web-search/progress-stream", () => realProgressStream);
+  mock.module("../../src/images/fulfill", () => realFulfill);
+});
 
 // --- Mock adapter: yields canned events per iteration from a queue ---
 let streamQueue: AdapterEvent[][] = [];

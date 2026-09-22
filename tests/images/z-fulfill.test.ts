@@ -10,11 +10,17 @@ const PREV_HOME = process.env.OPENCODEX_HOME;
 let fulfillImageCall: typeof import("../../src/images/fulfill")["fulfillImageCall"];
 let imageFulfillmentTailSnapshot: typeof import("../../src/images/fulfill")["imageFulfillmentTailSnapshot"];
 let testHome = "";
+// `mock.restore()` does not undo `mock.module`: Bun keeps both overrides below for every
+// file that runs after this one in the same process. Keep the real modules to put back.
+let realXaiClient: Record<string, unknown> = {};
+let realArtifacts: Record<string, unknown> = {};
 
 beforeAll(async () => {
   testHome = join(tmpdir(), "ocx-test-" + randomUUID());
   process.env.OPENCODEX_HOME = testHome;
   mock.restore();
+  realXaiClient = { ...(await import("../../src/images/xai-client")) };
+  realArtifacts = { ...(await import("../../src/images/artifacts")) };
   mock.module("../../src/images/xai-client", () => ({
     callXaiImages: async (req: XaiImageRequest, _auth: unknown, _signal?: AbortSignal, timeoutMs?: number) => {
       xaiCalls.push(req);
@@ -37,7 +43,12 @@ beforeAll(async () => {
   }));
   ({ fulfillImageCall, imageFulfillmentTailSnapshot } = await import(`../../src/images/fulfill?fulfill=${Date.now()}`));
 });
-afterAll(() => { if (PREV_HOME === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = PREV_HOME; mock.restore(); });
+afterAll(() => {
+  if (PREV_HOME === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = PREV_HOME;
+  mock.restore();
+  mock.module("../../src/images/xai-client", () => realXaiClient);
+  mock.module("../../src/images/artifacts", () => realArtifacts);
+});
 
 // --- Mutable mock state (reset() restores defaults before each test) ---
 let xaiResult: { images: Array<{ b64_json?: string; url?: string }> } = { images: [{ b64_json: "dGVzdA==" }] };
