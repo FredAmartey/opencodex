@@ -7,12 +7,14 @@
  * the legacy claude-ocx-* spelling a saved selector may still carry —
  * with first-wins dedupe (mirrors the desktop3p registry collision policy).
  * Values are authoritative context windows only (native override table /
- * adapter-reported CatalogModel.contextWindow / the Anthropic registry seed); nothing is guessed.
+ * adapter-reported CatalogModel.contextWindow / the Anthropic registry for passthrough ids);
+ * nothing is guessed.
  */
 import { aliasForNative, aliasForRoute, currentClaudeAliasSpelling, legacyAliasForNative, legacyAliasForRoute } from "./alias";
 import { desktop3pAlias } from "./desktop-3p";
 import { nativeOpenAiContextWindow, type CatalogModel, type NativeContextLimitsInput } from "../codex/catalog";
 import { ANTHROPIC_MODEL_CONTEXT_WINDOWS } from "../providers/registry/model-seeds";
+import type { OcxClaudeCodeConfig } from "../types";
 
 const ONE_MILLION = 1_000_000;
 
@@ -134,18 +136,25 @@ export function shouldMarkOneMillion(window: number | undefined, auto: AutoConte
   return auto.enabled && window > AUTO_CONTEXT_FLOOR && window >= auto.compactWindow;
 }
 
+/** Present when bare Claude ids take the native passthrough on this launch (#5755). */
+export interface NativeClaudePassthrough {
+  /** `claudeCode.modelMap`: a mapped id is routed, not passed through. */
+  modelMap?: Readonly<Record<string, string>>;
+}
+
 /**
- * Native Claude ids ride the subscription passthrough whether or not an `anthropic` provider is
- * configured, so the registry's windows fill in for ids no configured row speaks for (#5755).
- * Same >=1M floor as the passthrough guard; a configured row, capped or not, keeps the final word.
+ * On a local subscription launch with `nativePassthrough` on, a bare `claude-*` id goes straight
+ * to Anthropic under Claude Code's own login and never reaches the router
+ * (server/claude-messages.ts `wantsNativePassthrough`). Undefined when the router decides:
+ * proxy auth, passthrough off, or a connected client, which authenticates with an admission token.
  */
-export function putNativeAnthropicWindows(
-  put: (key: string, value: number) => void,
-  configuredIds: ReadonlySet<string>,
-): void {
-  for (const [id, window] of Object.entries(ANTHROPIC_MODEL_CONTEXT_WINDOWS)) {
-    if (window >= ONE_MILLION && !configuredIds.has(id)) put(id, window);
-  }
+export function nativeClaudePassthroughFor(
+  claudeCode: OcxClaudeCodeConfig | undefined,
+  markerMode: "proxy" | "subscription",
+): NativeClaudePassthrough | undefined {
+  return markerMode === "subscription" && claudeCode?.nativePassthrough !== false
+    ? { modelMap: claudeCode?.modelMap }
+    : undefined;
 }
 
 export function buildClaudeContextWindows(
@@ -155,6 +164,7 @@ export function buildClaudeContextWindows(
   // it the Claude surface keeps advertising the uncapped authoritative window while the
   // Codex catalog advertises the capped one, and the two disagree about the same model.
   nativeContextCap?: NativeContextLimitsInput,
+  nativeClaude?: NativeClaudePassthrough,
 ): Record<string, number> {
   const out: Record<string, number> = {};
   const put = (key: string | null, value: number) => {
@@ -168,6 +178,16 @@ export function buildClaudeContextWindows(
     put(desktop3pAlias("native", slug), window);
     put(aliasForNative(slug), window);
     put(legacyAliasForNative(slug), window);
+  }
+  // Passthrough ids never reach the router, so the registry speaks for them ahead of any routed
+  // row that shares the bare id (#5755). An anthropic row capped under 1M still keeps its id
+  // unmarked, and a modelMap entry routes its id elsewhere.
+  if (nativeClaude) {
+    const capped = new Set(routedModels.flatMap(m =>
+      m.provider === "anthropic" && typeof m.contextWindow === "number" && m.contextWindow < ONE_MILLION ? [m.id] : []));
+    for (const [id, window] of Object.entries(ANTHROPIC_MODEL_CONTEXT_WINDOWS)) {
+      if (window >= ONE_MILLION && !capped.has(id) && !nativeClaude.modelMap?.[id]) put(id, window);
+    }
   }
   // Anthropic passthrough guard (audit 021 #3): canonical claude ids ride the
   // subscription passthrough — marking a sub-1M one would strap [1m]/1M-beta onto
@@ -193,7 +213,6 @@ export function buildClaudeContextWindows(
     put(legacyAliasForRoute(m.provider, m.id), window);
     if (bareCounts.get(m.id) === 1) put(m.id, window);
   }
-  putNativeAnthropicWindows(put, new Set(routedModels.flatMap(m => m.provider === "anthropic" ? [m.id] : [])));
   return out;
 }
 

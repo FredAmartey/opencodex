@@ -84,9 +84,6 @@ test("GET /api/claude-code returns defaults + available + aliases", async () => 
     // Aliases preview uses the readable CLI-surface family (devlog 050 / audit 051 #2).
     expect(d.aliases.some((a: { id: string }) => a.id === "ocx-claude-mock--test-model")).toBe(true);
     expect(typeof d.port).toBe("number");
-    // No anthropic provider is configured, and native Claude tiers still get the 1M marker (#5755).
-    expect(d.contextWindows["claude-sonnet-5"]).toBe(1_000_000);
-    expect(d.effectiveModelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5[1m]");
   } finally {
     await server.stop(true);
   }
@@ -228,6 +225,10 @@ test("PUT round-trips three-state authMode (devlog 260720 + 260726_claude_auth_a
     get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.authMode).toBe("proxy");
     expect(loadConfig().claudeCode?.authMode).toBe("proxy");
+    // With no anthropic provider, a bare Claude id has nowhere to go under proxy auth (#5755).
+    const sonnetTier = (body: Record<string, unknown>) =>
+      (body.effectiveModelEnv as Record<string, string>).ANTHROPIC_DEFAULT_SONNET_MODEL;
+    expect(sonnetTier(get)).toBeUndefined();
 
     // subscription now stores the literal so an explicit choice survives auth changes.
     const back = await fetch(new URL("/api/claude-code", server.url), {
@@ -239,6 +240,8 @@ test("PUT round-trips three-state authMode (devlog 260720 + 260726_claude_auth_a
     expect(loadConfig().claudeCode?.authMode).toBe("subscription");
     get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.authMode).toBe("subscription");
+    // Under Claude Code's own login it passes through natively and keeps its 1M window.
+    expect(sonnetTier(get)).toBe("claude-sonnet-5[1m]");
 
     // "auto" is the return path: it deletes the key so detection drives the mode again.
     const auto = await fetch(new URL("/api/claude-code", server.url), {

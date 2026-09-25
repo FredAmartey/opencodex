@@ -175,15 +175,16 @@ function rollbackInjectedKeys(port: number, injectedKeys: string[], tracked?: Tr
  * In-process effective model-env (default + tier slots, [1m] applied) under the shared
  * 3s bound (audit R4#3). Returns {} on timeout/failure so injection degrades safely.
  */
-async function computeEffectiveModelEnv(config: OcxConfig, auto?: AutoContextMode): Promise<{ modelEnv: Record<string, string>; windows: Record<string, number> }> {
-  const { boundedContextWindows, buildClaudeContextWindows, effectiveModelEnv } = await import("../claude/context-windows");
+async function computeEffectiveModelEnv(config: OcxConfig, markerMode: "proxy" | "subscription", auto?: AutoContextMode): Promise<{ modelEnv: Record<string, string>; windows: Record<string, number> }> {
+  const { boundedContextWindows, buildClaudeContextWindows, effectiveModelEnv, nativeClaudePassthroughFor } = await import("../claude/context-windows");
+  const nativeClaude = nativeClaudePassthroughFor(config.claudeCode, markerMode);
   const windows = await boundedContextWindows(async () => {
     const { gatherRoutedModels, nativeContextLimits, visibleNativeSlugs } = await import("../codex/catalog");
     try {
-      return buildClaudeContextWindows([...visibleNativeSlugs(config)], await gatherRoutedModels(config), nativeContextLimits(config));
+      return buildClaudeContextWindows([...visibleNativeSlugs(config)], await gatherRoutedModels(config), nativeContextLimits(config), nativeClaude);
     } catch (error) {
       if (error && typeof error === "object" && (error as { code?: unknown }).code === "catalog_busy") {
-        return buildClaudeContextWindows([...visibleNativeSlugs(config)], [], nativeContextLimits(config));
+        return buildClaudeContextWindows([...visibleNativeSlugs(config)], [], nativeContextLimits(config), nativeClaude);
       }
       throw error;
     }
@@ -307,7 +308,7 @@ export async function injectSystemEnv(
       ? undefined
       : launchctlGetenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
     const auto = resolveAutoContext(config.claudeCode, userAutoCompact);
-    const { modelEnv, windows } = await computeEffectiveModelEnv(config, auto);
+    const { modelEnv, windows } = await computeEffectiveModelEnv(config, markerMode, auto);
     for (const [name, value] of Object.entries(modelEnv)) {
       if (name === "ANTHROPIC_MODEL") continue; // legacy slot handled by shell file only (back-compat)
       injectLever(name, value);
