@@ -383,7 +383,7 @@ v1 別名按字面解碼（歷史上 model ID 中包含的兩字元序列 `~s` /
 `ANTHROPIC_SMALL_FAST_MODEL`。有效 Haiku 值為 `tierModels.haiku ?? smallFastModel`，並會
 提供給兩個 Haiku 變數。
 
-以訂閱方式啟動時，Claude Code 自身的登入會把 `claude-sonnet-5` 這類裸 Claude ID 直接送給 Anthropic，因此無論其他供應商為同一 ID 列出什麼，這些 ID 的上下文視窗都取自供應商登錄表。未設定的 Opus、Sonnet 或 Fable 槽位會填入 Claude Code 為該別名解析出的原生 ID，並帶上 `[1m]` 標記，因為在閘道之後，Claude Code 會把不帶標記的 ID 按 200k 計算。上限低於 1M 的 `anthropic` 列或 `claudeCode.modelMap` 項目會讓對應 ID 保持無標記，Haiku 永遠不會被填入或標記。以代理驗證啟動或關閉 `nativePassthrough` 時，由路由器決定，只有路由列的視窗生效。
+以訂閱模式啟動 `ocx claude` 時，Claude Code 自身的登入會把 `claude-sonnet-5` 這類裸 Claude ID 直接送給 Anthropic，因此無論其他供應商為同一 ID 列出什麼，這些 ID 的上下文視窗都取自供應商登錄表。未設定的 Opus、Sonnet 或 Fable 槽位會填入 Claude Code 為該別名解析出的原生 ID，並帶上 `[1m]` 標記，因為在閘道之後，Claude Code 會把不帶標記的 ID 按 200k 計算。上限低於 1M 的 `anthropic` 列或 `claudeCode.modelMap` 項目會讓對應 ID 保持無標記，Haiku 永遠不會被填入或標記。以代理驗證啟動或關閉 `nativePassthrough` 時，由路由器決定，只有路由列的視窗生效。系統環境和 shell 檔案會讓未設定的槽位保持為空，因為它們的值也會傳到經由 hub 的啟動。
 
 當 `tierModels.haiku` 和 `smallFastModel` 均未設定時，OpenCodex 會讓兩個輔助模型變數保持未設定；隨後 Claude Code 會選擇其原生輔助模型（目前為 Sonnet），並可能產生原生供應商費用。
 

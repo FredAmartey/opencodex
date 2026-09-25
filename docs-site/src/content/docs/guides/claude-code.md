@@ -544,14 +544,15 @@ fall back to 829,800.
 `ANTHROPIC_SMALL_FAST_MODEL`. The effective Haiku is `tierModels.haiku ?? smallFastModel`, fed
 to both Haiku variables.
 
-On a subscription launch, Claude Code's own login carries a bare Claude id such as
-`claude-sonnet-5` straight to Anthropic, so those ids take their context windows from the provider
-registry, whatever another provider lists under the same id. An unset Opus, Sonnet or Fable slot
-then gets the native id Claude Code resolves that alias to, with the `[1m]` marker, because behind
-a gateway Claude Code accounts an unmarked id at 200k. An `anthropic` row capped below 1M or a
-`claudeCode.modelMap` entry keeps its id unmarked, and Haiku is never filled or marked. When the
+When `ocx claude` launches in subscription mode, Claude Code's own login carries a bare Claude id
+such as `claude-sonnet-5` straight to Anthropic, so those ids take their context windows from the
+provider registry, whatever another provider lists under the same id. An unset Opus, Sonnet or Fable
+slot then gets the native id Claude Code resolves that alias to, with the `[1m]` marker, because
+behind a gateway Claude Code accounts an unmarked id at 200k. An `anthropic` row capped below 1M or
+a `claudeCode.modelMap` entry keeps its id unmarked, and Haiku is never filled or marked. When the
 launch uses proxy auth or `nativePassthrough` is off, the router decides, and only a routed row's
-window counts.
+window counts. System env and the shell file leave unset slots empty, since their values also reach
+launches that go through a hub.
 
 When both `tierModels.haiku` and `smallFastModel` are absent, OpenCodex leaves both helper variables unset; Claude Code then chooses its native helper model (currently Sonnet), which may incur native-provider charges.
 

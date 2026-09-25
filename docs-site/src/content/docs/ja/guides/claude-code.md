@@ -323,7 +323,7 @@ Claude ページで圧縮値を調整できます。**警告:** モデルの実�
 `ANTHROPIC_SMALL_FAST_MODEL` です。実際の Haiku 値は `tierModels.haiku ?? smallFastModel` で、
 両 Haiku 変数に入ります。
 
-サブスクリプション起動では、Claude Code 自身のログインが `claude-sonnet-5` のような素の Claude ID をそのまま Anthropic に送ります。そのため、これらの ID のコンテキストウィンドウは、別のプロバイダーが同じ ID に何を載せていてもプロバイダーレジストリから取ります。未設定の Opus / Sonnet / Fable スロットには、Claude Code がそのエイリアスを解決するネイティブ ID が `[1m]` マーカー付きで入ります。ゲートウェイ越しの Claude Code は、マーカーのない ID を 200k として数えるためです。1M 未満に上限を設定した `anthropic` 行や `claudeCode.modelMap` のエントリがある ID にはマーカーを付けず、Haiku は埋めることもマーカーを付けることもありません。プロキシ認証で起動した場合や `nativePassthrough` がオフの場合はルーターが決め、ルーティングされた行のウィンドウだけが使われます。
+`ocx claude` をサブスクリプションモードで起動すると、Claude Code 自身のログインが `claude-sonnet-5` のような素の Claude ID をそのまま Anthropic に送ります。そのため、これらの ID のコンテキストウィンドウは、別のプロバイダーが同じ ID に何を載せていてもプロバイダーレジストリから取ります。未設定の Opus / Sonnet / Fable スロットには、Claude Code がそのエイリアスを解決するネイティブ ID が `[1m]` マーカー付きで入ります。ゲートウェイ越しの Claude Code は、マーカーのない ID を 200k として数えるためです。1M 未満に上限を設定した `anthropic` 行や `claudeCode.modelMap` のエントリがある ID にはマーカーを付けず、Haiku は埋めることもマーカーを付けることもありません。プロキシ認証で起動した場合や `nativePassthrough` がオフの場合はルーターが決め、ルーティングされた行のウィンドウだけが使われます。システム環境とシェルファイルは、ハブ経由の起動にも値が届くため、未設定のスロットを空のままにします。
 
 `tierModels.haiku` と `smallFastModel` の両方がない場合、OpenCodex は 2 つのヘルパーモデル変数を未設定のままにします。その後 Claude Code がネイティブのヘルパーモデル（現在は Sonnet）を選択し、ネイティブプロバイダーで料金が発生する可能性があります。
 
