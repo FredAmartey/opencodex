@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { loadConfig } from "../config";
 import { injectClaudeAgentDefs } from "../claude/agents-inject";
 import { CLAUDE_ALIAS_PREFIX_CURRENT, CLAUDE_ALIAS_PREFIX_CURRENT_V2, CLAUDE_ALIAS_PREFIX_V1, CLAUDE_ALIAS_PREFIX_V2 } from "../claude/alias";
-import { claudeToolSearchEnv, effectiveModelEnv, resolveAutoContext } from "../claude/context-windows";
+import { claudeToolSearchEnv, effectiveModelEnv, putNativeAnthropicWindows, resolveAutoContext } from "../claude/context-windows";
 import { claudeConfigDir, refreshGatewayModelCacheFromProxy } from "../claude/gateway-cache";
 import { commandInvocation } from "../lib/win-exec";
 import { isProxyAdmissionSecret } from "../server/auth-cors";
@@ -477,6 +477,12 @@ export function readConnectedClaudeContextWindows(path = DEFAULT_CATALOG_PATH): 
         put(desktop3pAlias("native", slug), contextWindow);
       }
     }
+    // The hub's own `anthropic` rows speak for their ids; the registry fills in the rest (#5755).
+    const hubAnthropicIds = new Set(parsed.models.flatMap(row => {
+      const slug = (row as { slug?: unknown } | null)?.slug;
+      return typeof slug === "string" && slug.startsWith("anthropic/") ? [slug.slice("anthropic/".length)] : [];
+    }));
+    putNativeAnthropicWindows(put, hubAnthropicIds);
     return out;
   } catch {
     return {};

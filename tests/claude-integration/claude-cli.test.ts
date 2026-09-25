@@ -14,6 +14,7 @@ import {
   rootSkipPermissionsNotice,
   shouldAllowRootSkipPermissions,
 } from "../../src/cli/claude";
+import { buildClaudeContextWindows } from "../../src/claude/context-windows";
 import { commandInvocation } from "../../src/lib/win-exec";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -178,6 +179,21 @@ describe("ocx claude native fallback", () => {
     }
   });
 
+  test("a connected client's window map knows the native 1M Claude ids (#5755)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-claude-connected-catalog-"));
+    try {
+      const path = join(dir, "catalog.json");
+      // The hub's own capped anthropic row speaks for that id.
+      writeFileSync(path, JSON.stringify({ models: [{ slug: "anthropic/claude-opus-5-5", context_window: 200_000 }] }));
+      const windows = readConnectedClaudeContextWindows(path);
+      expect(windows["claude-sonnet-5"]).toBe(1_000_000);
+      expect(windows["claude-opus-5-5"]).toBe(200_000);
+      expect(windows["claude-haiku-4-5"]).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a saved current ocx-claude selector also falls back to the configured native model", () => {
     expect(nativeModelOverride("ocx-claude-mock--model", "opus", [], ["mock"]))
       .toMatchObject({ flag: ["--model", "opus"] });
@@ -308,6 +324,12 @@ describe("ocx claude env assembly", () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     // Do NOT set _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL — it disables gateway model discovery.
     expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBeUndefined();
+  });
+
+  test("an exported tier model wins over the native [1m] default (#5755)", () => {
+    const env = buildClaudeEnv(cfg(), 10100, { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5" }, buildClaudeContextWindows([], []), AUTH_PRESENT);
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5");
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("claude-opus-5-5[1m]");
   });
 
   test("configured API key becomes the auth token (admission required)", () => {

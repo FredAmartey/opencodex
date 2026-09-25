@@ -84,6 +84,9 @@ test("GET /api/claude-code returns defaults + available + aliases", async () => 
     // Aliases preview uses the readable CLI-surface family (devlog 050 / audit 051 #2).
     expect(d.aliases.some((a: { id: string }) => a.id === "ocx-claude-mock--test-model")).toBe(true);
     expect(typeof d.port).toBe("number");
+    // No anthropic provider is configured, and native Claude tiers still get the 1M marker (#5755).
+    expect(d.contextWindows["claude-sonnet-5"]).toBe(1_000_000);
+    expect(d.effectiveModelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5[1m]");
   } finally {
     await server.stop(true);
   }

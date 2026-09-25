@@ -208,3 +208,35 @@ describe("auto-context (devlog 260712 020 + audit 021)", () => {
     expect(shouldMarkOneMillion(windows["cursor/gpt-5.6-luna"], { enabled: false, compactWindow: 350_000 })).toBe(true);
   });
 });
+
+// Behind a gateway Claude Code accounts an id without `[1m]` at 200k. A native Claude id only got
+// its 1M window from a configured `anthropic` provider row, so `--model sonnet` stayed at 200k on
+// installs that reach Claude through the Claude Code login alone (#5755).
+describe("native Claude tiers without an anthropic provider (#5755)", () => {
+  test("an empty config marks the Opus, Sonnet and Fable tiers and leaves Haiku unset", () => {
+    expect(effectiveModelEnv(undefined, buildClaudeContextWindows([], []))).toEqual({
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-5-5[1m]",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5[1m]",
+      ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-1[1m]",
+    });
+  });
+
+  test("configured tiers win, and a native id in one is marked from the registry", () => {
+    const windows = buildClaudeContextWindows([], [{ provider: "mock", id: "small-model", contextWindow: 128_000 }]);
+    const env = effectiveModelEnv({
+      tierModels: { opus: "mock/small-model", sonnet: "claude-sonnet-5", haiku: "claude-haiku-4-5" },
+    }, windows);
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("mock/small-model");
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-5[1m]");
+    expect(env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("claude-fable-5-1[1m]");
+    // Haiku 4.5 is a 200k model.
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("claude-haiku-4-5");
+  });
+
+  test("a configured anthropic row speaks for its id, even under 1M", () => {
+    const windows = buildClaudeContextWindows([], [{ provider: "anthropic", id: "claude-sonnet-5", contextWindow: 200_000 }]);
+    const env = effectiveModelEnv(undefined, windows);
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("claude-opus-5-5[1m]");
+  });
+});

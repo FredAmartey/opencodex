@@ -7,13 +7,23 @@
  * the legacy claude-ocx-* spelling a saved selector may still carry —
  * with first-wins dedupe (mirrors the desktop3p registry collision policy).
  * Values are authoritative context windows only (native override table /
- * adapter-reported CatalogModel.contextWindow); nothing is guessed.
+ * adapter-reported CatalogModel.contextWindow / the Anthropic registry seed); nothing is guessed.
  */
 import { aliasForNative, aliasForRoute, currentClaudeAliasSpelling, legacyAliasForNative, legacyAliasForRoute } from "./alias";
 import { desktop3pAlias } from "./desktop-3p";
 import { nativeOpenAiContextWindow, type CatalogModel, type NativeContextLimitsInput } from "../codex/catalog";
+import { ANTHROPIC_MODEL_CONTEXT_WINDOWS } from "../providers/registry/model-seeds";
 
 const ONE_MILLION = 1_000_000;
+
+/**
+ * The native id each Claude Code tier alias resolves to (2.1.282: `--model opus` sends
+ * `claude-opus-5-5`, `sonnet` sends `claude-sonnet-5`, `fable` sends `claude-fable-5-1`).
+ * Behind a gateway Claude Code accounts an unmarked id at 200k, so an unset tier slot is filled
+ * with this id when the map marks it (#5755). A marked alias cannot stand in: Claude Code sends
+ * `sonnet[1m]` upstream unresolved. Haiku has no entry; its 200k window never marks.
+ */
+const CLAUDE_CODE_NATIVE_TIERS = { opus: "claude-opus-5-5", sonnet: "claude-sonnet-5", fable: "claude-fable-5-1" } as const;
 
 /**
  * Auto-context defaults (devlog 260712 020, user-approved).
@@ -124,6 +134,20 @@ export function shouldMarkOneMillion(window: number | undefined, auto: AutoConte
   return auto.enabled && window > AUTO_CONTEXT_FLOOR && window >= auto.compactWindow;
 }
 
+/**
+ * Native Claude ids ride the subscription passthrough whether or not an `anthropic` provider is
+ * configured, so the registry's windows fill in for ids no configured row speaks for (#5755).
+ * Same >=1M floor as the passthrough guard; a configured row, capped or not, keeps the final word.
+ */
+export function putNativeAnthropicWindows(
+  put: (key: string, value: number) => void,
+  configuredIds: ReadonlySet<string>,
+): void {
+  for (const [id, window] of Object.entries(ANTHROPIC_MODEL_CONTEXT_WINDOWS)) {
+    if (window >= ONE_MILLION && !configuredIds.has(id)) put(id, window);
+  }
+}
+
 export function buildClaudeContextWindows(
   nativeSlugs: readonly string[],
   routedModels: readonly CatalogModel[],
@@ -169,6 +193,7 @@ export function buildClaudeContextWindows(
     put(legacyAliasForRoute(m.provider, m.id), window);
     if (bareCounts.get(m.id) === 1) put(m.id, window);
   }
+  putNativeAnthropicWindows(put, new Set(routedModels.flatMap(m => m.provider === "anthropic" ? [m.id] : [])));
   return out;
 }
 
@@ -217,10 +242,14 @@ export function effectiveModelEnv(
     const marked = withOneMillionMarker(value === undefined ? undefined : currentClaudeAliasSpelling(value), windows, auto);
     if (marked) out[name] = marked;
   };
+  // An unset tier slot is filled only when its native id marks; otherwise Claude Code keeps
+  // choosing, as before.
+  const tier = (configured: string | undefined, native: string) =>
+    configured ?? (shouldMarkOneMillion(windows[native], auto) ? native : undefined);
   set("ANTHROPIC_MODEL", claudeCode?.model);
-  set("ANTHROPIC_DEFAULT_OPUS_MODEL", claudeCode?.tierModels?.opus);
-  set("ANTHROPIC_DEFAULT_SONNET_MODEL", claudeCode?.tierModels?.sonnet);
-  set("ANTHROPIC_DEFAULT_FABLE_MODEL", claudeCode?.tierModels?.fable);
+  set("ANTHROPIC_DEFAULT_OPUS_MODEL", tier(claudeCode?.tierModels?.opus, CLAUDE_CODE_NATIVE_TIERS.opus));
+  set("ANTHROPIC_DEFAULT_SONNET_MODEL", tier(claudeCode?.tierModels?.sonnet, CLAUDE_CODE_NATIVE_TIERS.sonnet));
+  set("ANTHROPIC_DEFAULT_FABLE_MODEL", tier(claudeCode?.tierModels?.fable, CLAUDE_CODE_NATIVE_TIERS.fable));
   const effectiveHaiku = claudeCode?.tierModels?.haiku ?? claudeCode?.smallFastModel;
   set("ANTHROPIC_DEFAULT_HAIKU_MODEL", effectiveHaiku);
   set("ANTHROPIC_SMALL_FAST_MODEL", effectiveHaiku);
